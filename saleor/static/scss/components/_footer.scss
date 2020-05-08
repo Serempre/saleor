@@ -39,6 +39,11 @@
       height: 38px;
       width: 113px;
     }
+    @media (max-width: 470px) {
+      img {
+        max-width: 140px;
+      }
+    }
   }
   hr {
     margin-top: 0;
