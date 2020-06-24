@@ -45,6 +45,8 @@ from saleor.order.utils import recalculate_order
 from saleor.page.models import Page, PageTranslation
 from saleor.payment import ChargeStatus, TransactionKind
 from saleor.payment.models import Payment
+from saleor.plugins.models import PluginConfiguration
+from saleor.plugins.vatlayer.plugin import VatlayerPlugin
 from saleor.product import AttributeInputType
 from saleor.product.models import (
     Attribute,
@@ -165,6 +167,17 @@ def assert_max_num_queries(capture_queries):
     return partial(capture_queries, exact=False)
 
 
+@pytest.fixture
+def setup_vatlayer(settings):
+    settings.PLUGINS = ["saleor.plugins.vatlayer.plugin.VatlayerPlugin"]
+    data = {
+        "active": True,
+        "configuration": [{"name": "Access key", "value": "vatlayer_access_key"},],
+    }
+    PluginConfiguration.objects.create(identifier=VatlayerPlugin.PLUGIN_ID, **data)
+    return settings
+
+
 @pytest.fixture(autouse=True)
 def setup_dummy_gateway(settings):
     settings.PLUGINS = ["saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin"]
@@ -212,6 +225,35 @@ def checkout(db):
 def checkout_with_item(checkout, product):
     variant = product.variants.get()
     add_variant_to_checkout(checkout, variant, 3)
+    checkout.save()
+    return checkout
+
+
+@pytest.fixture
+def checkout_with_shipping_required(checkout_with_item, product):
+    checkout = checkout_with_item
+    variant = product.variants.get()
+    add_variant_to_checkout(checkout, variant, 3)
+    checkout.save()
+    return checkout
+
+
+@pytest.fixture
+def other_shipping_method(shipping_zone):
+    return ShippingMethod.objects.create(
+        name="DPD",
+        minimum_order_price=Money(0, "USD"),
+        type=ShippingMethodType.PRICE_BASED,
+        price=Money(9, "USD"),
+        shipping_zone=shipping_zone,
+    )
+
+
+@pytest.fixture
+def checkout_without_shipping_required(checkout, product_without_shipping):
+    checkout = checkout
+    variant = product_without_shipping.variants.get()
+    add_variant_to_checkout(checkout, variant, 1)
     checkout.save()
     return checkout
 
@@ -886,7 +928,7 @@ def product_list(product_type, category, warehouse):
                     price=Money(20, "USD"),
                     category=category,
                     product_type=product_type,
-                    is_published=False,
+                    is_published=True,
                 ),
                 Product(
                     pk=1489,
@@ -1104,7 +1146,7 @@ def order_line_with_allocation_in_many_stocks(customer_user, variant_with_many_s
         variant_name=str(variant),
         product_sku=variant.sku,
         is_shipping_required=variant.is_shipping_required(),
-        quantity=2,
+        quantity=3,
         variant=variant,
         unit_price=TaxedMoney(net=net, gross=gross),
         tax_rate=23,
@@ -1115,6 +1157,36 @@ def order_line_with_allocation_in_many_stocks(customer_user, variant_with_many_s
             Allocation(order_line=order_line, stock=stocks[0], quantity_allocated=2),
             Allocation(order_line=order_line, stock=stocks[1], quantity_allocated=1),
         ]
+    )
+
+    return order_line
+
+
+@pytest.fixture
+def order_line_with_one_allocation(customer_user, variant_with_many_stocks):
+    address = customer_user.default_billing_address.get_copy()
+    variant = variant_with_many_stocks
+    stocks = variant.stocks.all().order_by("pk")
+
+    order = Order.objects.create(
+        billing_address=address, user_email=customer_user.email, user=customer_user
+    )
+
+    net = variant.get_price()
+    gross = Money(amount=net.amount * Decimal(1.23), currency=net.currency)
+    order_line = order.lines.create(
+        product_name=str(variant.product),
+        variant_name=str(variant),
+        product_sku=variant.sku,
+        is_shipping_required=variant.is_shipping_required(),
+        quantity=2,
+        variant=variant,
+        unit_price=TaxedMoney(net=net, gross=gross),
+        tax_rate=23,
+    )
+
+    Allocation.objects.create(
+        order_line=order_line, stock=stocks[0], quantity_allocated=1
     )
 
     return order_line
